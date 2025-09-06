@@ -7,5 +7,4 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", features = ["egui"] }
-nih_plug_vst3 = { git = "https://github.com/robbert-vdh/nih-plug.git" }
+vst = "0.4.0"

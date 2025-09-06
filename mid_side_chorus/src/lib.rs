@@ -1,8 +1,11 @@
-use nih_plug::prelude::*;
-use nih_plug_egui::{create_egui_editor, egui, EguiState};
-use std::sync::Arc;
+#[macro_use]
+extern crate vst;
 
 use std::f32::consts::PI;
+use std::sync::Arc;
+use vst::buffer::AudioBuffer;
+use vst::plugin::{Category, Info, Plugin, PluginParameters};
+use vst::util::AtomicFloat;
 
 const MAX_DELAY_SAMPLES: usize = 44100 * 2; // 2 seconds at 44.1kHz
 
@@ -31,13 +34,62 @@ impl Lfo {
     }
 }
 
+struct Parameters {
+    mid_depth: AtomicFloat,
+    mid_speed: AtomicFloat,
+    side_depth: AtomicFloat,
+    side_speed: AtomicFloat,
+}
 
-// The main plugin struct.
-pub struct MidSideChorus {
-    params: Arc<MidSideChorusParams>,
-    editor_state: EguiState,
+impl Default for Parameters {
+    fn default() -> Self {
+        Self {
+            mid_depth: AtomicFloat::new(0.5),
+            mid_speed: AtomicFloat::new(0.5),
+            side_depth: AtomicFloat::new(0.5),
+            side_speed: AtomicFloat::new(0.5),
+        }
+    }
+}
 
-    // DSP state
+impl PluginParameters for Parameters {
+    fn get_parameter(&self, index: i32) -> f32 {
+        match index {
+            0 => self.mid_depth.get(),
+            1 => self.mid_speed.get(),
+            2 => self.side_depth.get(),
+            3 => self.side_speed.get(),
+            _ => 0.0,
+        }
+    }
+
+    fn set_parameter(&self, index: i32, value: f32) {
+        match index {
+            0 => self.mid_depth.set(value),
+            1 => self.mid_speed.set(value),
+            2 => self.side_depth.set(value),
+            3 => self.side_speed.set(value),
+            _ => (),
+        }
+    }
+
+    fn get_parameter_text(&self, index: i32) -> String {
+        format!("{:.2}", self.get_parameter(index))
+    }
+
+    fn get_parameter_name(&self, index: i32) -> String {
+        match index {
+            0 => "Mid Depth".to_string(),
+            1 => "Mid Speed".to_string(),
+            2 => "Side Depth".to_string(),
+            3 => "Side Speed".to_string(),
+            _ => "".to_string(),
+        }
+    }
+}
+
+struct MidSideChorus {
+    params: Arc<Parameters>,
     sample_rate: f32,
     mid_lfo1: Lfo,
     mid_lfo2: Lfo,
@@ -48,31 +100,13 @@ pub struct MidSideChorus {
     delay_pos: usize,
 }
 
-// The parameters for the plugin.
-#[derive(Params)]
-struct MidSideChorusParams {
-    #[id = "mid_depth"]
-    pub mid_depth: FloatParam,
-
-    #[id = "mid_speed"]
-    pub mid_speed: FloatParam,
-
-    #[id = "side_depth"]
-    pub side_depth: FloatParam,
-
-    #[id = "side_speed"]
-    pub side_speed: FloatParam,
-}
-
-impl Default for MidSideChorus {
-    fn default() -> Self {
+impl Plugin for MidSideChorus {
+    fn new(_host: vst::host::Host) -> Self {
         Self {
-            params: Arc::new(MidSideChorusParams::default()),
-            editor_state: EguiState::from_size(300, 180),
-
-            sample_rate: 44100.0, // Default, will be updated in initialize
+            params: Arc::new(Parameters::default()),
+            sample_rate: 44100.0,
             mid_lfo1: Lfo::new(0.5),
-            mid_lfo2: Lfo::new(0.51), // Slightly different for stereo effect
+            mid_lfo2: Lfo::new(0.51),
             side_lfo1: Lfo::new(0.6),
             side_lfo2: Lfo::new(0.61),
             mid_delay: vec![0.0; MAX_DELAY_SAMPLES],
@@ -80,91 +114,25 @@ impl Default for MidSideChorus {
             delay_pos: 0,
         }
     }
-}
 
-impl Default for MidSideChorusParams {
-    fn default() -> Self {
-        Self {
-            mid_depth: FloatParam::new(
-                "Mid Depth",
-                0.5,
-                FloatRange::Linear { min: 0.0, max: 1.0 },
-            )
-            .with_smoother(SmoothingStyle::Linear(50.0)),
-            mid_speed: FloatParam::new(
-                "Mid Speed",
-                0.5,
-                FloatRange::Linear { min: 0.1, max: 10.0 },
-            )
-            .with_smoother(SmoothingStyle::Linear(50.0)),
-            side_depth: FloatParam::new(
-                "Side Depth",
-                0.5,
-                FloatRange::Linear { min: 0.0, max: 1.0 },
-            )
-            .with_smoother(SmoothingStyle::Linear(50.0)),
-            side_speed: FloatParam::new(
-                "Side Speed",
-                0.5,
-                FloatRange::Linear { min: 0.1, max: 10.0 },
-            )
-            .with_smoother(SmoothingStyle::Linear(50.0)),
+    fn get_info(&self) -> Info {
+        Info {
+            name: "Mid Side Chorus".to_string(),
+            vendor: "Jules".to_string(),
+            unique_id: 13371337,
+            category: Category::Effect,
+            inputs: 2,
+            outputs: 2,
+            parameters: 4,
+            ..Default::default()
         }
     }
-}
 
-impl Plugin for MidSideChorus {
-    const NAME: &'static str = "Mid Side Chorus";
-    const VENDOR: &'static str = "Jules";
-    const URL: &'static str = "https://www.example.com";
-    const EMAIL: &'static str = "jules@example.com";
-
-    const VERSION: &'static str = env!("CARGO_PKG_VERSION");
-
-    const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = &[AudioIOLayout {
-        main_input_channels: NonZeroU32::new(2),
-        main_output_channels: NonZeroU32::new(2),
-        ..AudioIOLayout::const_default()
-    }];
-
-    type SysExMessage = ();
-    type BackgroundTask = ();
-
-    fn params(&self) -> Arc<dyn Params> {
-        self.params.clone()
+    fn set_sample_rate(&mut self, rate: f32) {
+        self.sample_rate = rate;
     }
 
-    fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
-        let params = self.params.clone();
-        create_egui_editor(
-            self.editor_state.clone(),
-            (),
-            move |_, _| {},
-            move |egui_ctx, setter, _state| {
-                egui::CentralPanel::default().show(egui_ctx, |ui| {
-                    ui.label("Mid");
-                    ui.add(nih_plug_egui::widgets::ParamSlider::for_param(&params.mid_depth, setter));
-                    ui.add(nih_plug_egui::widgets::ParamSlider::for_param(&params.mid_speed, setter));
-                    ui.separator();
-                    ui.label("Side");
-                    ui.add(nih_plug_egui::widgets::ParamSlider::for_param(&params.side_depth, setter));
-                    ui.add(nih_plug_egui::widgets::ParamSlider::for_param(&params.side_speed, setter));
-                });
-            },
-        )
-    }
-
-    fn initialize(
-        &mut self,
-        _audio_io_layout: &AudioIOLayout,
-        buffer_config: &BufferConfig,
-        _context: &mut impl ProcessContext<Self>,
-    ) -> bool {
-        self.sample_rate = buffer_config.sample_rate;
-        true
-    }
-
-    fn reset(&mut self) {
+    fn resume(&mut self) {
         self.mid_lfo1.phase = 0.0;
         self.mid_lfo2.phase = 0.0;
         self.side_lfo1.phase = 0.0;
@@ -174,24 +142,29 @@ impl Plugin for MidSideChorus {
         self.delay_pos = 0;
     }
 
-    fn process(
-        &mut self,
-        buffer: &mut Buffer,
-        _aux: &mut AuxiliaryBuffers,
-        _context: &mut impl ProcessContext<Self>,
-    ) -> ProcessStatus {
-        for mut frame in buffer.iter_samples() {
-            let [left, right] = frame.get_mut(0..2).unwrap();
+    fn get_parameter_object(&mut self) -> Arc<dyn PluginParameters> {
+        self.params.clone()
+    }
 
-            // Mid/Side encoding
-            let mid = (*left + *right) * 0.5;
-            let side = (*left - *right) * 0.5;
+    fn process(&mut self, buffer: &mut AudioBuffer<f32>) {
+        let (inputs, outputs) = buffer.split();
+        let (in_l, in_r) = inputs.split_at(1);
+        let (mut out_l, mut out_r) = outputs.split_at_mut(1);
+        let (in_l, in_r) = (&in_l[0], &in_r[0]);
+        let (out_l, out_r) = (&mut out_l[0], &mut out_r[0]);
+
+        for i in 0..buffer.samples() {
+            let left = in_l[i];
+            let right = in_r[i];
+
+            let mid = (left + right) * 0.5;
+            let side = (left - right) * 0.5;
 
             // --- Mid processing ---
-            self.mid_lfo1.set_freq(self.params.mid_speed.smoothed.next());
-            self.mid_lfo2.set_freq(self.params.mid_speed.smoothed.next() * 1.05); // Slightly detuned
+            self.mid_lfo1.set_freq(self.params.mid_speed.get() * 10.0);
+            self.mid_lfo2.set_freq(self.params.mid_speed.get() * 10.0 * 1.05);
 
-            let mid_depth_samples = self.params.mid_depth.smoothed.next() * self.sample_rate * 0.02; // Max 20ms depth
+            let mid_depth_samples = self.params.mid_depth.get() * self.sample_rate * 0.02;
 
             let mid_delay_time1 = mid_depth_samples * (1.0 + self.mid_lfo1.next(self.sample_rate));
             let mid_delay_time2 = mid_depth_samples * (1.0 + self.mid_lfo2.next(self.sample_rate));
@@ -204,10 +177,10 @@ impl Plugin for MidSideChorus {
             let processed_mid = mid * 0.5 + (mid_delayed1 + mid_delayed2) * 0.25;
 
             // --- Side processing ---
-            self.side_lfo1.set_freq(self.params.side_speed.smoothed.next());
-            self.side_lfo2.set_freq(self.params.side_speed.smoothed.next() * 1.05);
+            self.side_lfo1.set_freq(self.params.side_speed.get() * 10.0);
+            self.side_lfo2.set_freq(self.params.side_speed.get() * 10.0 * 1.05);
 
-            let side_depth_samples = self.params.side_depth.smoothed.next() * self.sample_rate * 0.02;
+            let side_depth_samples = self.params.side_depth.get() * self.sample_rate * 0.02;
 
             let side_delay_time1 = side_depth_samples * (1.0 + self.side_lfo1.next(self.sample_rate));
             let side_delay_time2 = side_depth_samples * (1.0 + self.side_lfo2.next(self.sample_rate));
@@ -220,17 +193,14 @@ impl Plugin for MidSideChorus {
             let processed_side = side * 0.5 + (side_delayed1 + side_delayed2) * 0.25;
 
             // --- M/S decoding and output ---
-            *left = processed_mid + processed_side;
-            *right = processed_mid - processed_side;
+            out_l[i] = processed_mid + processed_side;
+            out_r[i] = processed_mid - processed_side;
 
             self.delay_pos = (self.delay_pos + 1) % MAX_DELAY_SAMPLES;
         }
-
-        ProcessStatus::Normal
     }
 }
 
-// Helper function for linear interpolation
 fn get_delayed(buffer: &[f32], delay_pos: usize, delay_time_samples: f32) -> f32 {
     let read_pos = (delay_pos as f32 - delay_time_samples + buffer.len() as f32) % buffer.len() as f32;
     let read_pos_frac = read_pos.fract();
@@ -242,23 +212,4 @@ fn get_delayed(buffer: &[f32], delay_pos: usize, delay_time_samples: f32) -> f32
     sample1 + (sample2 - sample1) * read_pos_frac
 }
 
-impl ClapPlugin for MidSideChorus {
-    const CLAP_ID: &'static str = "com.jules.mid-side-chorus";
-    const CLAP_DESCRIPTION: Option<&'static str> = Some("A mid/side chorus effect.");
-    const CLAP_MANUAL_URL: Option<&'static str> = Some(Self::URL);
-    const CLAP_SUPPORT_URL: Option<&'static str> = None;
-    const CLAP_FEATURES: &'static [ClapFeature] = &[
-        ClapFeature::AudioEffect,
-        ClapFeature::Stereo,
-        ClapFeature::Utility,
-    ];
-}
-
-impl Vst3Plugin for MidSideChorus {
-    const VST3_CLASS_ID: [u8; 16] = *b"JulesMidSideCho!";
-    const VST3_SUBCATEGORIES: &'static [Vst3SubCategory] =
-        &[Vst3SubCategory::Fx, Vst3SubCategory::Modulation];
-}
-
-nih_export_clap!(MidSideChorus);
-nih_export_vst3!(MidSideChorus);
+plugin_main!(MidSideChorus);
